@@ -898,13 +898,36 @@ function parseProfileClientSide(text) {
   }
 
   // LEARNING STYLE
-  var sec4Lines = sec4.split('\n').filter(function(l){return l.trim().length>10;});
-  var lsSummary = cl(sec4Lines.slice(0,3).join(' '));
-  var frM = sec4.match(/(?:slow|stall|friction)[^\n]*\n([^\n]{10,200})/i);
-  var lsFriction = frM ? cl(frM[1]) : '';
+  // Split sec4 into paragraphs
+  var sec4Paras = sec4.split(/\n\n+/).filter(function(p){ return p.trim().length > 10; });
+  // Summary = all paragraphs joined until we hit "best learning conditions" or bullet list
+  var summaryParas = [];
+  var condParas = [];
+  var hitConditions = false;
+  sec4Paras.forEach(function(p) {
+    if (/best learning conditions|learning conditions/i.test(p)) { hitConditions = true; return; }
+    if (hitConditions || /^[-\u2022]/.test(p.trim())) { condParas.push(p); }
+    else { summaryParas.push(p); }
+  });
+  var lsSummary = cl(summaryParas.join(' '));
+
+  // Friction: look for "What slowed" sentence anywhere in sec4
+  var frictionSentMatch = sec4.match(/[Ww]hat slowed[^.]+\.[^.]*\./);
+  var lsFriction = frictionSentMatch ? cl(frictionSentMatch[0]) : '';
+  // If no friction sentence found try inline "slow" keyword paragraph
+  if (!lsFriction) {
+    var frM = sec4.match(/(?:slow|stall)[^\n]{0,60}\n([^\n]{10,300})/i);
+    lsFriction = frM ? cl(frM[1]) : '';
+  }
+
+  // Conditions: bullet points after "best learning conditions"
   var condRx = /[-\u2022]\s*([^\n]{10,120})/g;
   var condM; var lsConditions = [];
-  while ((condM = condRx.exec(sec4)) !== null && lsConditions.length < 4) lsConditions.push(cl(condM[1]));
+  var condSource = condParas.length > 0 ? condParas.join('\n') : sec4;
+  // Only use bullet points, not sentence fragments
+  while ((condM = condRx.exec(condSource)) !== null && lsConditions.length < 5) {
+    lsConditions.push(cl(condM[1]));
+  }
 
   // PERSONALITY - find blocks by keywords
   // Handles both "keyword:\nContent" and "keyword:\nContent\n\nNext label:"
@@ -941,7 +964,7 @@ function parseProfileClientSide(text) {
   var hiddenTraits = {
     unseen: getHidden(sec6, ['not see about herself','not see about himself','does not see','do not see','what she does not','what he does not']),
     underused: getHidden(sec6, ['underusing','underus','not leverag','underval','strengths she is','strengths he is']),
-    cognitiveIndicators: getHidden(sec6, ['cognitive profile indicators','cognitive ind','ADHD','neurodiverg','pattern suggest']),
+    cognitiveIndicators: getHidden(sec6, ['cognitive profile indicators','cognitive ind','ADHD','neurodiverg','pattern suggest','combination of','cognitive profile']),
   };
   if (!hiddenTraits.unseen && !hiddenTraits.underused) {
     var sec6Paras = sec6.split(/\n\n+/).filter(function(p){return p.trim().length>30;});
@@ -949,6 +972,14 @@ function parseProfileClientSide(text) {
     if (sec6Paras[1]) hiddenTraits.underused = cl(sec6Paras[1]);
     if (sec6Paras[2]) hiddenTraits.cognitiveIndicators = cl(sec6Paras[2]);
   }
+  // Strip any leading label lines like "Strengths she is underusing:" from content
+  function stripLeadingLabel(str) {
+    if (!str) return str;
+    return str.replace(/^[^.!?]{0,60}:\s*/,'').trim();
+  }
+  hiddenTraits.underused = stripLeadingLabel(hiddenTraits.underused);
+  hiddenTraits.unseen = stripLeadingLabel(hiddenTraits.unseen);
+  hiddenTraits.cognitiveIndicators = stripLeadingLabel(hiddenTraits.cognitiveIndicators);
 
   // TALENT STACK - handle "Rank: Title\nDescription" format
   var talents = [];
@@ -1196,32 +1227,70 @@ function addPlaceholderBlock(pdf, label, content, y, accentColor) {
   const margin = 14;
   const width = 182;
   const lineH = 5;
-  const lines = pdf.splitTextToSize(content || '', width - 20);
-  const blockH = Math.max(18, lines.length * lineH + 14);
+  const maxTextW = width - 20;
+  const lines = pdf.splitTextToSize(String(content || ''), maxTextW);
+  // Block height = label row (10) + text lines + bottom padding (5)
+  const blockH = 10 + (lines.length * lineH) + 5;
+  const maxBlockH = pageH - 30; // max usable height on a page
 
-  if (y + blockH > pageH - 15) { pdf.addPage(); y = 20; }
+  // If block fits on current page, draw it normally
+  if (y + blockH <= pageH - 15) {
+    pdf.setFillColor(242, 242, 242);
+    pdf.roundedRect(margin, y, width, blockH, 3, 3, 'F');
+    pdf.setFillColor(...accentColor);
+    pdf.roundedRect(margin, y, 4, blockH, 2, 2, 'F');
+    pdf.setFontSize(7);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setTextColor(...accentColor);
+    pdf.text(label.toUpperCase(), margin + 10, y + 6);
+    pdf.setFontSize(9);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setTextColor(17, 17, 17);
+    pdf.text(lines, margin + 10, y + 12);
+    return y + blockH + 5;
+  }
 
-  // Background
-  pdf.setFillColor(242, 242, 242);
-  pdf.roundedRect(margin, y, width, blockH, 3, 3, 'F');
-  // Accent bar
-  pdf.setFillColor(...accentColor);
-  pdf.roundedRect(margin, y, 4, blockH, 2, 2, 'F');
-
-  // Label
+  // Block is too tall — draw label header then flow lines across pages
   pdf.setFontSize(7);
   pdf.setFont('helvetica', 'bold');
   pdf.setTextColor(...accentColor);
-  pdf.text(label.toUpperCase(), margin + 10, y + 6);
+  // Draw label bar at top
+  pdf.setFillColor(242, 242, 242);
+  pdf.roundedRect(margin, y, width, 12, 3, 3, 'F');
+  pdf.setFillColor(...accentColor);
+  pdf.roundedRect(margin, y, 4, 12, 2, 2, 'F');
+  pdf.text(label.toUpperCase(), margin + 10, y + 8);
+  y += 14;
 
-  // Content
   pdf.setFontSize(9);
   pdf.setFont('helvetica', 'normal');
   pdf.setTextColor(17, 17, 17);
-  const textY = y + 11;
-  pdf.text(lines, margin + 10, textY);
 
-  return y + blockH + 5;
+  lines.forEach(line => {
+    if (y > pageH - 18) {
+      pdf.addPage();
+      // Re-add chrome — pageNum is in outer scope
+      pdf.setFillColor(0, 181, 181);
+      pdf.rect(0, 0, 215.9, 7, 'F');
+      pdf.setFontSize(7);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setTextColor(255, 255, 255);
+      pdf.text('AIFMS  |  AI FINALLY MAKES SENSE', margin, 5);
+      pdf.setFillColor(17, 17, 17);
+      pdf.rect(0, 279.4 - 10, 215.9, 10, 'F');
+      pdf.setFontSize(7);
+      pdf.setTextColor(0, 181, 181);
+      pdf.text('@aifmsofficial on Instagram  |  beacons.ai/aifms', margin, 279.4 - 4);
+      y = 14;
+      pdf.setFontSize(9);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setTextColor(17, 17, 17);
+    }
+    pdf.text(line, margin + 10, y);
+    y += lineH;
+  });
+
+  return y + 5;
 }
 
 function downloadPDF() {
@@ -1412,7 +1481,8 @@ function downloadPDF() {
 
   y = addPlaceholderBlock(pdf, 'Full Cognitive Loop Description', profileData.cognitiveLoop?.fullDescription || '', y, teal);
 
-  // ── PAGE 3: THINKING PATTERNS ────────────────────────────────────────────
+  // If cognitive loop block pushed past page boundary, start patterns fresh
+  if (y > pageH - 30) { pdf.addPage(); addPageChrome(pageNum++); y = 14; }
   pdf.addPage();
   addPageChrome(pageNum++);
   y = 14;
@@ -1449,21 +1519,33 @@ function downloadPDF() {
 
   y = addSectionHeader(pdf, 'Section 04', 'Your Learning Style', y);
   y = addPlaceholderBlock(pdf, 'How You Learn Best', profileData.learningStyle?.summary || '', y, teal);
-  y = addPlaceholderBlock(pdf, 'What Slows You Down', profileData.learningStyle?.friction || '', y, purple);
+  if (profileData.learningStyle?.friction) {
+    y = addPlaceholderBlock(pdf, 'What Slows You Down', profileData.learningStyle.friction, y, purple);
+  }
 
-  if (profileData.learningStyle?.conditions?.length) {
+  // Only render conditions if there are real bullet point items
+  if (profileData.learningStyle?.conditions?.length > 0) {
     const conditions = profileData.learningStyle.conditions;
-    conditions.forEach((c, i) => {
-      if (y > pageH - 20) { pdf.addPage(); addPageChrome(pageNum++); y = 14; }
+    // Add a label header for conditions
+    if (y > pageH - 20) { pdf.addPage(); addPageChrome(pageNum++); y = 14; }
+    pdf.setFontSize(7);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setTextColor(...teal);
+    pdf.text('BEST LEARNING CONDITIONS', margin, y + 5);
+    y += 10;
+    conditions.forEach((c) => {
+      if (y > pageH - 15) { pdf.addPage(); addPageChrome(pageNum++); y = 14; }
+      const cLines = pdf.splitTextToSize(c, contentW - 14);
+      const cH = Math.max(10, cLines.length * 4.5 + 6);
       pdf.setFillColor(...lightGray);
-      pdf.roundedRect(margin, y, contentW, 10, 2, 2, 'F');
+      pdf.roundedRect(margin, y, contentW, cH, 2, 2, 'F');
       pdf.setFillColor(...teal);
-      pdf.roundedRect(margin, y, 4, 10, 2, 2, 'F');
+      pdf.roundedRect(margin, y, 4, cH, 2, 2, 'F');
       pdf.setFontSize(8.5);
       pdf.setFont('helvetica', 'normal');
-      pdf.setTextColor(...black);
-      pdf.text(c, margin + 10, y + 7);
-      y += 12;
+      pdf.setTextColor(17, 17, 17);
+      pdf.text(cLines, margin + 10, y + 6);
+      y += cH + 3;
     });
     y += 4;
   }
@@ -1495,27 +1577,28 @@ function downloadPDF() {
   const rankColors = [teal, [0,122,122], purple, purple, [80,80,80]];
 
   talents.forEach((t, i) => {
-    if (y > pageH - 30) { pdf.addPage(); addPageChrome(pageNum++); y = 14; }
     const rc = rankColors[Math.min(i, rankColors.length - 1)];
+    const descLines = pdf.splitTextToSize(t.description || '', contentW - 42);
+    const talentBlockH = Math.max(16, descLines.length * 4.5 + 12);
+    if (y + talentBlockH > pageH - 18) { pdf.addPage(); addPageChrome(pageNum++); y = 14; }
     pdf.setFillColor(...rc);
-    pdf.roundedRect(margin, y, 36, 14, 2, 2, 'F');
+    pdf.roundedRect(margin, y, 36, talentBlockH, 2, 2, 'F');
     pdf.setFontSize(6);
     pdf.setFont('helvetica', 'bold');
     pdf.setTextColor(...white);
     const rankLines = pdf.splitTextToSize(t.rank || '', 32);
-    pdf.text(rankLines, margin + 18, y + 5, { align: 'center' });
+    pdf.text(rankLines, margin + 18, y + 6, { align: 'center' });
     pdf.setFillColor(...lightGray);
-    pdf.roundedRect(margin + 36, y, contentW - 36, 14, 2, 2, 'F');
+    pdf.roundedRect(margin + 36, y, contentW - 36, talentBlockH, 2, 2, 'F');
     pdf.setFontSize(9);
     pdf.setFont('helvetica', 'bold');
     pdf.setTextColor(...black);
-    pdf.text(t.talent || '', margin + 42, y + 6);
+    pdf.text(t.talent || '', margin + 42, y + 7);
     pdf.setFontSize(8);
     pdf.setFont('helvetica', 'normal');
-    pdf.setTextColor(...gray);
-    const descLines = pdf.splitTextToSize(t.description || '', contentW - 42);
-    pdf.text(descLines[0] || '', margin + 42, y + 11);
-    y += 16;
+    pdf.setTextColor(136, 136, 136);
+    pdf.text(descLines, margin + 42, y + 13);
+    y += talentBlockH + 4;
   });
 
   // ── CLOSING CTA PAGE ──────────────────────────────────────────────────────
