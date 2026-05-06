@@ -836,8 +836,20 @@ function parseProfileClientSide(text) {
 
   // CORE TYPE
   var typeName = 'Your Cognitive Type';
+  // Try bold first, then fall back to first short line in sec1
   var tnMatch = (sec1 + '\n' + text).match(/\*\*([A-Z][a-zA-Z ]{4,40})\*\*/);
-  if (tnMatch) typeName = cl(tnMatch[1]);
+  if (tnMatch) {
+    typeName = cl(tnMatch[1]);
+  } else {
+    // Plain text: first line that is short (a title) and capitalized
+    var sec1FirstLines = sec1.split('\n').map(function(l){ return cl(l); }).filter(function(l){ return l.length > 3; });
+    for (var i = 0; i < sec1FirstLines.length; i++) {
+      if (sec1FirstLines[i].length < 50 && /^[A-Z]/.test(sec1FirstLines[i])) {
+        typeName = sec1FirstLines[i];
+        break;
+      }
+    }
+  }
   var sec1Lines = sec1.split('\n').map(function(l){return cl(l);}).filter(function(l){return l.length > 15;});
   var narrativeLines = sec1Lines.filter(function(l){return l !== typeName;});
   var identityStatement = narrativeLines[0] || '';
@@ -861,13 +873,22 @@ function parseProfileClientSide(text) {
   var finalSteps = loopSteps.slice(0,7);
   while (finalSteps.length < 7) finalSteps.push('Step ' + (finalSteps.length+1));
 
-  // THINKING PATTERNS - split on **Pattern N** or **Bold heading**
+  // THINKING PATTERNS - handle both bold and plain "Pattern N: Title" format
   var patterns = [];
+  // Try bold format first
   var patRx = /\*\*([^*\n]{5,80})\*\*\s*\n([\s\S]{20,500}?)(?=\n\*\*[A-Z]|\n\n\*\*|$)/gi;
   var pm;
   while ((pm = patRx.exec(sec3)) !== null) {
     patterns.push({ name: cl(pm[1]), description: cl(pm[2]) });
   }
+  // Try plain "Pattern N: Title\nDescription" format
+  if (patterns.length === 0) {
+    var plainPatRx = /Pattern\s*\d+[:.]\s*([^\n]{3,80})\n([\s\S]{20,500}?)(?=\nPattern\s*\d+|$)/gi;
+    while ((pm = plainPatRx.exec(sec3)) !== null) {
+      patterns.push({ name: cl(pm[1]), description: cl(pm[2]) });
+    }
+  }
+  // Final fallback: split on double newlines
   if (patterns.length === 0) {
     var sec3Paras = sec3.split(/\n\n+/).filter(function(p){return p.trim().length>30;});
     sec3Paras.slice(0,5).forEach(function(p,i){
@@ -886,28 +907,41 @@ function parseProfileClientSide(text) {
   while ((condM = condRx.exec(sec4)) !== null && lsConditions.length < 4) lsConditions.push(cl(condM[1]));
 
   // PERSONALITY - find blocks by keywords
+  // Handles both "keyword:\nContent" and "keyword:\nContent\n\nNext label:"
   function getBlock(sec, kwds) {
-    var rx = new RegExp('(?:' + kwds.join('|') + ')[^\\n]*\\n([\\s\\S]{10,300}?)(?=\\n\\*\\*|\\n[A-Z][a-z]|$)', 'i');
+    var rx = new RegExp(
+      '(?:' + kwds.join('|') + ')[^\\n]*\\n([\\s\\S]{10,600}?)(?=\\n(?:' +
+      ['communication','decision','uncertainty','structure','chaos','how she','how he','direct'].join('|') +
+      ')|\\n\\n[A-Z]|$)',
+      'i'
+    );
     var m2 = sec.match(rx);
-    return m2 ? cl(m2[1]) : cl((sec.split('\n').filter(function(l){return l.trim().length>20;})[0])||'');
+    if (m2 && m2[1] && m2[1].trim().length > 10) return cl(m2[1]);
+    // Fallback: split on blank lines and return first substantial paragraph
+    var paras = sec.split(/\n\n+/).filter(function(p){ return p.trim().length > 20; });
+    return cl(paras[0] || '');
   }
   var personality = {
-    communication: getBlock(sec5, ['communication','communicate']),
-    decisions: getBlock(sec5, ['decision','decide']),
-    uncertainty: getBlock(sec5, ['uncertainty','uncertain']),
-    structure: getBlock(sec5, ['structure','chaos']),
+    communication: getBlock(sec5, ['communication style','communicate']),
+    decisions: getBlock(sec5, ['decision-making','decision making','decide']),
+    uncertainty: getBlock(sec5, ['uncertainty','uncertain','how she handles','how he handles']),
+    structure: getBlock(sec5, ['structure vs','chaos response','structure']),
   };
 
-  // HIDDEN TRAITS
+  // HIDDEN TRAITS - handle plain text headers like "What she does not see about herself:"
   function getHidden(sec, kwds) {
-    var rx = new RegExp('(?:' + kwds.join('|') + ')[^\\n]*\\n([\\s\\S]{10,400}?)(?=\\n\\*\\*[A-Z]|\\n[A-Z][a-z]{2,} |$)', 'i');
+    var rx = new RegExp(
+      '(?:' + kwds.join('|') + ')[^\\n]*\\n([\\s\\S]{10,600}?)(?=\\n(?:What she|What he|Strengths she|Strengths he|Cognitive profile|Cognitive ind|$))',
+      'i'
+    );
     var m3 = sec.match(rx);
-    return m3 ? cl(m3[1]) : '';
+    if (m3 && m3[1] && m3[1].trim().length > 10) return cl(m3[1]);
+    return '';
   }
   var hiddenTraits = {
-    unseen: getHidden(sec6, ['not see','does not see','do not see']),
-    underused: getHidden(sec6, ['underus','not leverag','underval']),
-    cognitiveIndicators: getHidden(sec6, ['ADHD','neurodiverg','cognitive profile','cognitive ind']),
+    unseen: getHidden(sec6, ['not see about herself','not see about himself','does not see','do not see','what she does not','what he does not']),
+    underused: getHidden(sec6, ['underusing','underus','not leverag','underval','strengths she is','strengths he is']),
+    cognitiveIndicators: getHidden(sec6, ['cognitive profile indicators','cognitive ind','ADHD','neurodiverg','pattern suggest']),
   };
   if (!hiddenTraits.unseen && !hiddenTraits.underused) {
     var sec6Paras = sec6.split(/\n\n+/).filter(function(p){return p.trim().length>30;});
@@ -916,16 +950,27 @@ function parseProfileClientSide(text) {
     if (sec6Paras[2]) hiddenTraits.cognitiveIndicators = cl(sec6Paras[2]);
   }
 
-  // TALENT STACK - find rank labels
+  // TALENT STACK - handle "Rank: Title\nDescription" format
   var talents = [];
   var rankLabels = ['Highest Leverage','High Leverage','Strong Leverage','Supporting Strength','Long Game'];
   rankLabels.forEach(function(rank) {
     var escaped = rank.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    var rx = new RegExp(escaped + '[^\\n]*\\n([\\s\\S]{10,500}?)(?=\\n(?:Highest|High|Strong|Supporting|Long Game)|$)', 'i');
+    // Match "Rank: Title\nDescription" OR "Rank\nTitle\nDescription"
+    var rx = new RegExp(
+      escaped + '[:\\s]*([^\\n]*?)\\n([\\s\\S]{10,500}?)(?=\\n(?:Highest Leverage|High Leverage|Strong Leverage|Supporting Strength|Long Game)|$)',
+      'i'
+    );
     var m4 = sec7.match(rx);
     if (m4) {
-      var lines = m4[1].trim().split('\n').filter(function(l){return l.trim().length>0;});
-      talents.push({ rank: rank, talent: cl(lines[0]||rank), description: cl(lines.slice(1).join(' '))||cl(m4[1]) });
+      var titlePart = cl(m4[1]);
+      var descPart = cl(m4[2]);
+      // If title is empty, use first line of description as title
+      if (!titlePart || titlePart.length < 3) {
+        var descLines = descPart.split('\n').filter(function(l){ return l.trim().length > 0; });
+        titlePart = cl(descLines[0] || rank);
+        descPart = cl(descLines.slice(1).join(' '));
+      }
+      talents.push({ rank: rank, talent: titlePart, description: descPart });
     }
   });
   if (talents.length === 0) {
